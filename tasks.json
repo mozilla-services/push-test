@@ -1,0 +1,21 @@
+[
+  ["hello", {}],
+  ["register", {}],
+  ["close", {}],
+  ["push", {"data": "mary had a little lamb", "headers":{
+    "TTL": "60",
+    "Topic": "test",
+    "content-encoding": "aesgcm128",
+    "encryption": "salt=test",
+    "encryption-key": "dh=test"
+  }}],
+  ["push", {"data": "mary had a little lamb", "headers":{
+    "TTL": "60",
+    "Topic": "test",
+    "content-encoding": "aesgcm128",
+    "encryption": "salt=test",
+    "encryption-key": "dh=test"
+  }}],
+  ["hello", {}],
+  ["ack", {}]
+]
