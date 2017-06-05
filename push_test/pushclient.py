@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import uuid
+import sys
 import traceback
 
 import aiohttp
@@ -12,13 +13,13 @@ class PushException(Exception):
     pass
 
 
-def output(**msg):
-    print(json.dumps(msg))
+def log_msg(out=sys.stdout, **msg):
+    print(json.dumps(msg), file=out)
 
 
 class PushClient(object):
     """Smoke Test the Autopush push server"""
-    def __init__(self, args, loop):
+    def __init__(self, args, loop, tasks=[]):
         self.config = args
         self.loop = loop
         self.connection = None
@@ -27,6 +28,8 @@ class PushClient(object):
         self.notifications = []
         self.uaid = None
         self.recv = []
+        self.tasks = tasks
+        self.output = None
 
     def _next_task(self):
         try:
@@ -36,33 +39,38 @@ class PushClient(object):
             return "cmd_done", {}
 
     async def run(self,
-                  server="wss://push.services.mozilla.com"):
+                  server="wss://push.services.mozilla.com",
+                  tasks=[]):
         """Connect to a remote server and execute the tasks
 
         :param server: URL to the Push Server
-    
+
         """
+        if tasks:
+            self.tasks = tasks
         if not self.connection:
             await self.cmd_connect(server)
         while len(self.tasks):
             cmd, args = self._next_task()
             try:
                 await getattr(self, cmd)(**args)
-            except websockets.exceptions.ConnectionClosed as ex:
+            except websockets.exceptions.ConnectionClosed:
                 pass
-            except Exception:
+            except PushException:
+                raise
+            except Exception:  # pragma: nocover
                 traceback.print_exc()
                 raise
-        output(status="Done run")
+        log_msg(out=self.output, status="Done run")
 
     async def process(self, message):
         """Process an incoming websocket message
-        
+
         :param message: JSON message content
         :return:
 
         """
-        # output(flow="input", **message)
+        # log_msg(out=self.output, flow="input", **message)
         mtype = "recv_" + message.get('messageType').lower()
         try:
             await getattr(self, mtype)(**message)
@@ -72,30 +80,26 @@ class PushClient(object):
 
     async def receiver(self):
         """Receiver handler for websocket messages
-        
+
         """
         try:
             while self.connection:
                 message = await self.connection.recv()
-                resp = await self.process(json.loads(message))
-            raise PushException("No connection")
+                await self.process(json.loads(message))
         except websockets.exceptions.ConnectionClosed:
-            output(status="Websocket Connection closed")
-            pass
+            log_msg(out=self.output, status="Websocket Connection closed")
 
     # Commands:::
 
     async def _send(self, no_recv=False, **msg):
         """Send a message out the websocket connection
-        
+
         :param no_recv: Flag to indicate if response is expected
         :param msg: message content
         :return:
 
         """
-        output(flow="output", **msg)
-        if not self.connection:
-            raise PushException("No connection")
+        log_msg(out=self.output, flow="output", **msg)
         await self.connection.send(json.dumps(msg))
         if no_recv:
             return
@@ -104,25 +108,25 @@ class PushClient(object):
 
     async def cmd_connect(self, server=None, **kwargs):
         """Connect to a remote websocket server
-        
+
         :param server: Websocket url
         :param kwargs: ignored
-        :return: 
-        
+        :return:
+
         """
         srv = self.config.server or server
-        output(status="Connecting to {}".format(srv))
+        log_msg(out=self.output, status="Connecting to {}".format(srv))
         self.connection = await websockets.connect(srv)
         self.recv.append(asyncio.ensure_future(self.receiver()))
 
     async def cmd_close(self, **kwargs):
         """Close the websocket connection (if needed)
-        
+
         :param kwargs: ignored
-        :return: 
-        
+        :return:
+
         """
-        output(status="Closing socket connection")
+        log_msg(out=self.output, status="Closing socket connection")
         if self.connection and self.connection.state == 1:
             try:
                 await self.connection.close()
@@ -132,21 +136,21 @@ class PushClient(object):
             except websockets.exceptions.ConnectionClosed:
                 pass
 
-    async def cmd_sleep(self, **kwargs):
-        output(status="Sleeping...")
-        await asyncio.sleep(5)
+    async def cmd_sleep(self, period=5, **kwargs):
+        log_msg(out=self.output, status="Sleeping...")
+        await asyncio.sleep(period)
         cmd, args = self._next_task()
         await getattr(self, cmd)(**args)
 
     async def cmd_hello(self, uaid=None, **kwargs):
         """Send a websocket "hello" message
-        
+
         :param uaid: User Agent ID (if reconnecting)
-        
+
         """
         if not self.connection or self.connection.state != 1:
             await self.cmd_connect()
-        output(status="Sending Hello")
+        log_msg(out=self.output, status="Sending Hello")
         args = dict(messageType="hello", use_webpush=1, **kwargs)
         if uaid:
             args['uaid'] = uaid
@@ -155,43 +159,51 @@ class PushClient(object):
         await self._send(**args)
 
     async def cmd_ack(self, channelID=None, version=None,
-                  timeout=60, **kwargs):
+                      timeout=60, **kwargs):
         """Acknowledge a previous mesage
-        
+
         :param channelID: Channel to acknowledge
         :param version: Version string for message to acknowledge
         :param kwargs: Additional optional arguments
-        :return: 
-        
+        :param timeout: Time to wait for notifications (used by testing)
+        :return:
+
         """
         timeout = timeout * 2
         while not len(self.notifications):
-            output(status="No notifications recv'd, Sleeping...")
-            await asyncio.sleep(.5)
+            log_msg(out=self.output,
+                    status="No notifications recv'd, Sleeping...")
+            await asyncio.sleep(0.5)
             timeout -= 1
-            if not timeout:
+            if timeout < 1:
                 raise PushException("Timeout waiting for messages")
-        last = self.notifications[-1]
-        output(status="Sending ACK",
-               channelID=channelID or last['channelID'],
-               version=version or last['version'])
-        await self._send(messageType="ack",
-                        channelID=channelID or last['channelID'],
-                        version=version or last['version'],
-                        no_recv=True)
+        try:
+            while True:
+                notif = self.notifications.pop(0)
+                log_msg(out=self.output,
+                        status="Sending ACK",
+                        channelID=channelID or notif['channelID'],
+                        version=version or notif['version'])
+                await self._send(messageType="ack",
+                                 channelID=channelID or notif['channelID'],
+                                 version=version or notif['version'],
+                                 no_recv=True)
+        except IndexError:
+            pass
         cmd, args = self._next_task()
         await getattr(self, cmd)(**args)
 
     async def cmd_register(self, channelID=None, key=None, **kwargs):
         """Register a new ChannelID
-        
+
         :param channelID: UUID for the channel to register
         :param key: applicationServerKey for a restricted access channel
         :param kwargs: additional optional arguments
-        :return: 
-        
+        :return:
+
         """
-        output(status="Sending new channel registration")
+        log_msg(out=self.output,
+                status="Sending new channel registration")
         channelID = channelID or self.channelID or str(uuid.uuid4())
         args = dict(messageType='register',
                     channelID=channelID)
@@ -202,23 +214,24 @@ class PushClient(object):
 
     async def cmd_done(self, **kwargs):
         """Close all connections and mark as done
-        
+
         :param kwargs: ignored
-        :return: 
-        
+        :return:
+
         """
-        output(status="done")
+        log_msg(out=self.output,
+                status="done")
         await self.cmd_close()
         await self.connection.close_connection()
 
     async def recv_hello(self, **msg):
         """Process a received "hello"
-        
+
         :param msg: body of response
-        :return: 
-        
+        :return:
+
         """
-        assert msg['status'] == 200
+        assert(msg['status'] == 200)
         try:
             self.uaid = msg['uaid']
             cmd, args = self._next_task()
@@ -228,38 +241,37 @@ class PushClient(object):
 
     async def recv_register(self, **msg):
         """Process a received registration message
-        
+
         :param msg: body of response
-        :return: 
-        
+        :return:
+
         """
-        assert msg['status'] == 200
-        try:
-            self.pushEndpoint = msg['pushEndpoint']
-            self.channelID = msg['channelID']
-            output(flow="input",
-                   message="register",
-                   channelID=self.channelID,
-                   pushEndpoint=self.pushEndpoint)
-            cmd, args = self._next_task()
-            await getattr(self, cmd)(**args)
-        except KeyError as ex:
-            raise PushException from ex
+        assert(msg['status'] == 200)
+        self.pushEndpoint = msg['pushEndpoint']
+        self.channelID = msg['channelID']
+        log_msg(out=self.output,
+                flow="input",
+                message="register",
+                channelID=self.channelID,
+                pushEndpoint=self.pushEndpoint)
+        cmd, args = self._next_task()
+        await getattr(self, cmd)(**args)
 
     async def recv_notification(self, **msg):
         """Process a received notification message
-        
+
         :param msg: body of response
-        
+
         """
         def repad(str):
             return str + '===='[len(msg['data']) % 4:]
 
         msg['_decoded_data'] = base64.urlsafe_b64decode(
             repad(msg['data'])).decode()
-        output(flow="input",
-               message="notification",
-               **msg)
+        log_msg(out=self.output,
+                flow="input",
+                message="notification",
+                **msg)
         self.notifications.append(msg)
         await self.cmd_ack()
         cmd, args = self._next_task()
@@ -267,12 +279,12 @@ class PushClient(object):
 
     async def _post(self, session, url, data):
         """Post a message to the endpoint
-        
+
         :param session: async session object
         :param url: pushEndpoint
         :param data: data to send
         :return:
-         
+
         """
         # print ("Fetching {}".format(url))
         with aiohttp.Timeout(10, loop=session.loop):
@@ -280,15 +292,14 @@ class PushClient(object):
 
     async def _post_session(self, url, headers, data):
         """create a session to send the post message to the endpoint
-        
+
         :param url: pushEndpoint
         :param headers: dictionary of headers
         :param data: body of the content to send
-        
+
         """
-        loop = asyncio.get_event_loop()
         async with aiohttp.ClientSession(
-                loop=loop,
+                loop=self.loop,
                 headers=headers
         ) as session:
             reply = await self._post(session, url, data)
@@ -296,13 +307,15 @@ class PushClient(object):
 
     async def cmd_push(self, data=None, headers=None):
         """Push data to the pushEndpoint
-        
+
         :param data: message content
         :param headers: dictionary of headers
-        :return: 
-        
+        :return:
+
         """
-        output(status="Pushing message", msg=repr(data))
+        log_msg(out=self.output,
+                status="Pushing message",
+                msg=repr(data))
         if data:
             if not headers:
                 headers = {
@@ -313,8 +326,9 @@ class PushClient(object):
                 }
         result = await self._post_session(self.pushEndpoint, headers, data)
         body = await result.text()
-        output(flow="http-out",
-               pushEndpoint=self.pushEndpoint,
-               headers=headers,
-               data=repr(data),
-               result="{}: {}".format(result.status, body))
+        log_msg(out=self.output,
+                flow="http-out",
+                pushEndpoint=self.pushEndpoint,
+                headers=headers,
+                data=repr(data),
+                result="{}: {}".format(result.status, body))

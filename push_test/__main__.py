@@ -1,15 +1,11 @@
 import asyncio
 import json
-import sys
 
 import websockets
 import argparse
 
-from push_test.pushclient import PushClient, output
+from push_test.pushclient import PushClient, log_msg
 
-"""
-from push_test.__main__ import PushClient, __main__;
-"""
 
 def config():
     parser = argparse.ArgumentParser(
@@ -36,6 +32,7 @@ def get_tasks(task_file):
     with open(task_file) as file:
         tasks = json.loads(file.read())
         return tasks
+
 
 def main():
     args = config()
@@ -64,14 +61,19 @@ def main():
     loop = asyncio.get_event_loop()
     loop.set_debug(args.debug)
 
-    client = PushClient(args, loop)
-    client.tasks = tasks
+    client = PushClient(args, loop, tasks)
 
     try:
         loop.run_until_complete(client.run())
-    except websockets.ConnectionClosed:
+    except websockets.exceptions.ConnectionClosed:
         pass
     except Exception as ex:
-        print("Unknown Exception: {}".format(ex))
+        log_msg(type="Error",
+                message="Unknown Exception",
+                exception=repr(ex))
     finally:
         loop.close()
+
+
+if __name__ == "__main__":
+    main()

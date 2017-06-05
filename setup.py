@@ -47,6 +47,6 @@ setup(
     install_requires=read_from('requirements.txt'),
     entry_points="""
     [console_scripts]
-    pywebpush = test_push.__main__:main
+    push-test = push_test.__main__:main
     """,
 )

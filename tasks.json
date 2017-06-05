@@ -16,6 +16,5 @@
     "encryption": "salt=test",
     "encryption-key": "dh=test"
   }}],
-  ["hello", {}],
-  ["ack", {}]
+  ["hello", {}]
 ]
