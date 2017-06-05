@@ -8,9 +8,8 @@ import argparse
 from push_test.pushclient import PushClient, output
 
 """
-from push_test.__main__ import PushClient, __main__; 
+from push_test.__main__ import PushClient, __main__;
 """
-
 
 def config():
     parser = argparse.ArgumentParser(
@@ -42,9 +41,9 @@ def main():
     args = config()
     tasks = get_tasks(args.task_file)
     """
-    "tasks" is a JSON list of lists, where the first item is the command and 
+    "tasks" is a JSON list of lists, where the first item is the command and
     the second are the arguments.
-    
+
     For instance
     ```
     [["hello", {}],
@@ -60,7 +59,7 @@ def main():
     Then `ack`s the response.
     And calls `done` to clean up.
     A "done" will be appended if not present.
-    
+
     """
     loop = asyncio.get_event_loop()
     loop.set_debug(args.debug)
@@ -70,16 +69,9 @@ def main():
 
     try:
         loop.run_until_complete(client.run())
-    except websockets.exceptions.ConnectionClosed:
-        import pdb;pdb.set_trace()
+    except websockets.ConnectionClosed:
         pass
     except Exception as ex:
-        import pdb;pdb.set_trace()
-        output(type="Error",
-               message="Unknown Exception",
-               exception=repr(ex))
+        print("Unknown Exception: {}".format(ex))
     finally:
         loop.close()
-
-if __name__ == "__main__":
-    main()
