@@ -99,7 +99,7 @@ class PushClient(object):
         :return:
 
         """
-        log_msg(out=self.output, flow="output", **msg)
+        log_msg(out=self.output, flow="output", msg=msg)
         await self.connection.send(json.dumps(msg))
         if no_recv:
             return
@@ -251,9 +251,10 @@ class PushClient(object):
         self.channelID = msg['channelID']
         log_msg(out=self.output,
                 flow="input",
+                msg=dict(
                 message="register",
                 channelID=self.channelID,
-                pushEndpoint=self.pushEndpoint)
+                pushEndpoint=self.pushEndpoint))
         cmd, args = self._next_task()
         await getattr(self, cmd)(**args)
 
@@ -271,7 +272,7 @@ class PushClient(object):
         log_msg(out=self.output,
                 flow="input",
                 message="notification",
-                **msg)
+                msg=msg)
         self.notifications.append(msg)
         await self.cmd_ack()
         cmd, args = self._next_task()
