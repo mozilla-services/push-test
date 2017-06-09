@@ -4,9 +4,9 @@ import io
 import json
 import unittest
 
+import pytest
 import websockets
 from mock import Mock, patch
-from nose.tools import eq_, ok_
 
 from push_test.pushclient import PushClient, PushException
 
@@ -61,10 +61,10 @@ class Test_PushClient(unittest.TestCase):
             self.mock_connect(),
             loop=self.loop)
         self.loop.run_until_complete(go())
-        eq_(self.client.uaid, "uaidValue")
-        eq_(len(self.client.tasks), 0)
+        assert self.client.uaid == "uaidValue"
+        assert len(self.client.tasks) == 0
         call_args = json.loads(self.mocks['send'].call_args[0][0])
-        eq_(call_args, dict(messageType="hello", use_webpush=1))
+        assert call_args == dict(messageType="hello", use_webpush=1)
         self.mocks['recv'].assert_called()
         self.mocks['close'].assert_called()
         self.mocks['close_connection'].assert_called()
@@ -84,16 +84,16 @@ class Test_PushClient(unittest.TestCase):
             self.mock_connect(),
             loop=self.loop)
         self.loop.run_until_complete(go())
-        eq_(len(self.client.tasks), 0)
+        assert len(self.client.tasks) == 0
         call_args = json.loads(self.mocks['send'].call_args[0][0])
-        eq_(call_args, dict(messageType="hello", use_webpush=1))
-        eq_(self.mocks['close'].called, False)
-        eq_(self.mocks['close_connection'].called, False)
+        assert call_args == dict(messageType="hello", use_webpush=1)
+        assert self.mocks['close'].called is False
+        assert self.mocks['close_connection'].called is False
 
     @patch('websockets.connect')
     def test_run_bad_recv(self, m_connect):
         async def go():
-            with self.assertRaises(PushException):
+            with pytest.raises(PushException):
                 await self.client.run(tasks=self.tasks)
 
         self.mocks['recv'] = Mock(return_value=json.dumps(
@@ -168,7 +168,7 @@ class Test_PushClient(unittest.TestCase):
             self.mock_connect(),
             loop=self.loop)
         self.loop.run_until_complete(go())
-        eq_(self.client.uaid, "uaidValue")
+        assert self.client.uaid == "uaidValue"
 
     @patch('websockets.connect')
     def test_hello_w_self_uaid(self, m_connect):
@@ -189,7 +189,7 @@ class Test_PushClient(unittest.TestCase):
             self.mock_connect(),
             loop=self.loop)
         self.loop.run_until_complete(go())
-        eq_(self.client.uaid, "uaidValue")
+        assert self.client.uaid == "uaidValue"
 
     @patch('websockets.connect')
     def test_hello_w_bad_reply(self, m_connect):
@@ -201,8 +201,8 @@ class Test_PushClient(unittest.TestCase):
                 await self.client.cmd_hello()
                 self.fail("bad test")  # pragma: nocover
             except PushException as ex:
-                eq_(type(ex.__cause__), KeyError)
-                eq_(ex.__cause__.args, ('uaid',))
+                assert type(ex.__cause__) == KeyError
+                assert ex.__cause__.args == ('uaid',)
                 pass
 
         self.mocks['recv'] = Mock(return_value=json.dumps(
@@ -238,8 +238,8 @@ class Test_PushClient(unittest.TestCase):
             self.mock_connect(),
             loop=self.loop)
         self.loop.run_until_complete(go())
-        eq_(len(self.client.notifications), 0)
-        ok_(self.scan_log("Sending ACK"))
+        assert len(self.client.notifications) == 0
+        assert self.scan_log("Sending ACK")
 
     @patch('websockets.connect')
     @patch('asyncio.sleep')
@@ -258,8 +258,7 @@ class Test_PushClient(unittest.TestCase):
                 while True:
                     await self.client.cmd_ack(timeout=1, sleep=0)
             except PushException as ex:
-                eq_(ex.args[0],
-                    'Timeout waiting for messages')
+                assert ex.args[0] == 'Timeout waiting for messages'
 
         self.mocks['recv'] = Mock(return_value=json.dumps(
                 {"messageType": "hello",
@@ -277,8 +276,8 @@ class Test_PushClient(unittest.TestCase):
             loop=self.loop
         )
         self.loop.run_until_complete(go())
-        eq_(len(self.client.notifications), 0)
-        ok_(self.scan_log("No notifications recv'd"))
+        assert len(self.client.notifications) == 0
+        assert self.scan_log("No notifications recv'd")
 
     @patch('websockets.connect')
     def test_cmd_register_key(self, m_connect):
@@ -304,9 +303,9 @@ class Test_PushClient(unittest.TestCase):
             self.mock_connect(),
             loop=self.loop)
         self.loop.run_until_complete(go())
-        eq_(self.client.pushEndpoint, endpoint)
-        eq_(self.client.channelID, chid)
-        ok_(self.scan_log("Sending new channel registration"))
+        assert self.client.pushEndpoint == endpoint
+        assert self.client.channelID == chid
+        assert self.scan_log("Sending new channel registration")
 
     @patch('websockets.connect')
     def test_rcv_notification(self, m_connect):
@@ -326,7 +325,7 @@ class Test_PushClient(unittest.TestCase):
             self.mock_connect(),
             loop=self.loop)
         self.loop.run_until_complete(go())
-        ok_(self.scan_log(test))
+        assert self.scan_log(test)
 
     @patch('websockets.connect')
     def test_cmd_sleep(self, m_connect):

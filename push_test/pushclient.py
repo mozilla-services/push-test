@@ -252,9 +252,9 @@ class PushClient(object):
         log_msg(out=self.output,
                 flow="input",
                 msg=dict(
-                message="register",
-                channelID=self.channelID,
-                pushEndpoint=self.pushEndpoint))
+                    message="register",
+                    channelID=self.channelID,
+                    pushEndpoint=self.pushEndpoint))
         cmd, args = self._next_task()
         await getattr(self, cmd)(**args)
 

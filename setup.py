@@ -3,7 +3,7 @@ import os
 
 from setuptools import find_packages, setup
 
-__version__ = "0.0.1"
+__version__ = "0.1.0"
 
 
 def read_from(file):
@@ -41,10 +41,12 @@ setup(
     author="JR Conlin",
     author_email="jr+src@mozilla.com",
     license="MPL2",
-    test_suite="nose.collector",
+    test_suite="pytest.collector",
     include_package_data=True,
     zip_safe=False,
     install_requires=read_from('requirements.txt'),
+    setup_requires=['pytest-runner'],
+    test_requires=read_from('test-requirements.txt'),
     entry_points="""
     [console_scripts]
     push-test = push_test.__main__:main

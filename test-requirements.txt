@@ -1,5 +1,6 @@
 -r requirements.txt
 mock
-nose
+pytest
+pytest-cov
 coverage
 flake8
