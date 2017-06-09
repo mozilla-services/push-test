@@ -1,0 +1,6 @@
+[
+  ["hello", {}],
+  ["register", {}],
+  ["push", {"data": "mary had a little lamb"}],
+  ["ack", {}]
+]
