@@ -1,10 +1,14 @@
 import asyncio
 import json
+import logging
 
 import websockets
 import argparse
 
-from push_test.pushclient import PushClient, log_msg
+from push_test.pushclient import PushClient
+
+
+logger = logging.getLogger(__name__)
 
 
 def config():
@@ -22,9 +26,9 @@ def config():
                         help="URL to websocket server",
                         default="wss://push.services.mozilla.com")
     parser.add_argument("--debug",
-                        type=bool,
+                        type=int,
                         help="Enable async debug mode",
-                        default=False)
+                        default=None)
     return parser.parse_args()
 
 
@@ -35,8 +39,6 @@ def get_tasks(task_file):
 
 
 def main():
-    args = config()
-    tasks = get_tasks(args.task_file)
     """
     "tasks" is a JSON list of lists, where the first item is the command and
     the second are the arguments.
@@ -46,7 +48,8 @@ def main():
     [["hello", {}],
      ["register", {}],
      ["push", {data="mary had a little lamb"}],
-     ["ack", {}],
+     ["sleep", {"period": 0.2}],
+     ["ack", {}]
     ]
     ```
     First executes a websocket `hello`.
@@ -58,8 +61,12 @@ def main():
     A "done" will be appended if not present.
 
     """
+    args = config()
     loop = asyncio.get_event_loop()
-    loop.set_debug(args.debug)
+    if args.debug:
+        loop.set_debug(True)
+        logging.basicConfig(level='DEBUG')
+    tasks = get_tasks(args.task_file)
 
     client = PushClient(args, loop, tasks)
 
@@ -68,9 +75,7 @@ def main():
     except websockets.exceptions.ConnectionClosed:
         pass
     except Exception as ex:
-        log_msg(type="Error",
-                message="Unknown Exception",
-                exception=repr(ex))
+        logger.error("Unknown Exception", ex)
     finally:
         loop.close()
 

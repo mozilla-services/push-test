@@ -28,7 +28,7 @@ class Test_PushClient(unittest.TestCase):
 
     def setUp(self):
         self.mocks = dict(send=Mock(),
-                          recv=Mock(),
+                          recv=Mock(return_value="Dummy String"),
                           close=Mock(),
                           close_connection=Mock())
         self.output = io.StringIO()
@@ -87,8 +87,6 @@ class Test_PushClient(unittest.TestCase):
         assert len(self.client.tasks) == 0
         call_args = json.loads(self.mocks['send'].call_args[0][0])
         assert call_args == dict(messageType="hello", use_webpush=1)
-        assert self.mocks['close'].called is False
-        assert self.mocks['close_connection'].called is False
 
     @patch('websockets.connect')
     def test_run_bad_recv(self, m_connect):
@@ -97,10 +95,10 @@ class Test_PushClient(unittest.TestCase):
                 await self.client.run(tasks=self.tasks)
 
         self.mocks['recv'] = Mock(return_value=json.dumps(
-                {"messageType": "invalid",
-                 "status": 200,
-                 "uaid": "uaidValue",
-                 "channelID": "chidValue"}
+            {"messageType": "invalid",
+             "status": 200,
+             "uaid": "uaidValue",
+             "channelID": "chidValue"}
             )
         )
         m_connect.return_value = asyncio.ensure_future(
@@ -135,10 +133,10 @@ class Test_PushClient(unittest.TestCase):
             await self.client.cmd_hello()
 
         self.mocks['recv'] = Mock(return_value=json.dumps(
-                {"messageType": "hello",
-                 "status": 200,
-                 "uaid": "uaidValue",
-                 "channelID": "chidValue"}
+            {"messageType": "hello",
+             "status": 200,
+             "uaid": "uaidValue",
+             "channelID": "chidValue"}
             )
         )
         m_connect.return_value = asyncio.ensure_future(
@@ -158,10 +156,10 @@ class Test_PushClient(unittest.TestCase):
             await self.client.cmd_hello(uaid="uaidValue")
 
         self.mocks['recv'] = Mock(return_value=json.dumps(
-                {"messageType": "hello",
-                 "status": 200,
-                 "uaid": "uaidValue",
-                 "channelID": "chidValue"}
+            {"messageType": "hello",
+             "status": 200,
+             "uaid": "uaidValue",
+             "channelID": "chidValue"}
             )
         )
         m_connect.return_value = asyncio.ensure_future(
@@ -179,10 +177,10 @@ class Test_PushClient(unittest.TestCase):
             await self.client.cmd_hello()
 
         self.mocks['recv'] = Mock(return_value=json.dumps(
-                {"messageType": "hello",
-                 "status": 200,
-                 "uaid": "uaidValue",
-                 "channelID": "chidValue"}
+            {"messageType": "hello",
+             "status": 200,
+             "uaid": "uaidValue",
+             "channelID": "chidValue"}
             )
         )
         m_connect.return_value = asyncio.ensure_future(
@@ -206,9 +204,9 @@ class Test_PushClient(unittest.TestCase):
                 pass
 
         self.mocks['recv'] = Mock(return_value=json.dumps(
-                {"messageType": "hello",
-                 "status": 200,
-                 "channelID": "chidValue"}
+            {"messageType": "hello",
+             "status": 200,
+             "channelID": "chidValue"}
             )
         )
         m_connect.return_value = asyncio.ensure_future(
@@ -225,13 +223,17 @@ class Test_PushClient(unittest.TestCase):
             self.client.notifications = [
                 dict(channelID='channel1', version='version1')
             ]
+            print('sending ack')
             await self.client.cmd_ack()
+            await self.client.cmd_close()
+            print('x ack')
+            self.loop.stop()
 
         self.mocks['recv'] = Mock(return_value=json.dumps(
-                {"messageType": "hello",
-                 "status": 200,
-                 "uaid": "uaidValue",
-                 "channelID": "chidValue"}
+            {"messageType": "hello",
+             "status": 200,
+             "uaid": "uaidValue",
+             "channelID": "chidValue"}
             )
         )
         m_connect.return_value = asyncio.ensure_future(
@@ -241,9 +243,10 @@ class Test_PushClient(unittest.TestCase):
         assert len(self.client.notifications) == 0
         assert self.scan_log("Sending ACK")
 
+
     @patch('websockets.connect')
     @patch('asyncio.sleep')
-    def test_cmd_ack_timeout(self, m_connect, m_sleep):
+    def test_cmd_ack_timeout(self, m_sleep, m_connect):
 
         async def mock_sleep():
             return asyncio.coroutine(Mock())
@@ -259,14 +262,13 @@ class Test_PushClient(unittest.TestCase):
                     await self.client.cmd_ack(timeout=1, sleep=0)
             except PushException as ex:
                 assert ex.args[0] == 'Timeout waiting for messages'
+                self.loop.stop()
 
         self.mocks['recv'] = Mock(return_value=json.dumps(
                 {"messageType": "hello",
-                 "status": 200,
-                 "uaid": "uaidValue",
-                 "channelID": "chidValue"}
-            )
-        )
+                 "status":200,
+                 "uaid": "uaidValue"}
+            ))
         m_sleep.return_value = asyncio.ensure_future(
             mock_sleep(),
             loop=self.loop
@@ -292,11 +294,11 @@ class Test_PushClient(unittest.TestCase):
             await self.client.cmd_register(key="someKey")
 
         self.mocks['recv'] = Mock(return_value=json.dumps(
-                {"messageType": "register",
-                 "status": 200,
-                 "uaid": "uaidValue",
-                 "channelID": chid,
-                 "pushEndpoint": endpoint}
+            {"messageType": "register",
+             "status": 200,
+             "uaid": "uaidValue",
+             "channelID": chid,
+             "pushEndpoint": endpoint}
             )
         )
         m_connect.return_value = asyncio.ensure_future(

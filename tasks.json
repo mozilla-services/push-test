@@ -16,5 +16,6 @@
     "encryption": "salt=test",
     "encryption-key": "dh=test"
   }}],
-  ["hello", {}]
+  ["hello", {}],
+  ["sleep", {"period":0.5}]
 ]

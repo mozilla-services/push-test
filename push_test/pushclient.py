@@ -4,6 +4,8 @@ import json
 import uuid
 import sys
 import traceback
+import logging
+import concurrent
 
 import aiohttp
 import websockets
@@ -13,13 +15,16 @@ class PushException(Exception):
     pass
 
 
-def log_msg(out=sys.stdout, **msg):
+logger = logging.getLogger(__name__)
+
+
+def output_msg(out=sys.stdout, **msg):
     print(json.dumps(msg), file=out)
 
 
-class PushClient(object):
+class PushClient():
     """Smoke Test the Autopush push server"""
-    def __init__(self, args, loop, tasks=[]):
+    def __init__(self, args, loop, tasks=None):
         self.config = args
         self.loop = loop
         self.connection = None
@@ -28,19 +33,35 @@ class PushClient(object):
         self.notifications = []
         self.uaid = None
         self.recv = []
-        self.tasks = tasks
+        self.tasks = tasks or []
         self.output = None
 
-    def _next_task(self):
+    async def _next_task(self):
+        """Tasks are shared between active "cmd_*" commands
+        and async "recv_*" events. Since both are reading off
+        the same stack, we centralize that here.
+
+        """
         try:
             task = self.tasks.pop(0)
-            return "cmd_" + task[0], task[1]
+            args = task[1]
+            logging.debug(">>> cmd_{}".format(task[0]))
+            await getattr(self, "cmd_" + task[0])(**(task[1]))
+            return True
         except IndexError:
-            return "cmd_done", {}
+            await self.cmd_done()
+            return False
+        except PushException:
+            raise
+        except AttributeError:
+            raise PushException("Invalid command: {}".format(task[0]))
+        except Exception:
+            traceback.print_exc()
+            raise
 
     async def run(self,
                   server="wss://push.services.mozilla.com",
-                  tasks=[]):
+                  tasks=None):
         """Connect to a remote server and execute the tasks
 
         :param server: URL to the Push Server
@@ -50,18 +71,8 @@ class PushClient(object):
             self.tasks = tasks
         if not self.connection:
             await self.cmd_connect(server)
-        while len(self.tasks):
-            cmd, args = self._next_task()
-            try:
-                await getattr(self, cmd)(**args)
-            except websockets.exceptions.ConnectionClosed:
-                pass
-            except PushException:
-                raise
-            except Exception:  # pragma: nocover
-                traceback.print_exc()
-                raise
-        log_msg(out=self.output, status="Done run")
+        while await self._next_task():
+            pass
 
     async def process(self, message):
         """Process an incoming websocket message
@@ -70,8 +81,8 @@ class PushClient(object):
         :return:
 
         """
-        # log_msg(out=self.output, flow="input", **message)
         mtype = "recv_" + message.get('messageType').lower()
+        logger.debug("<<< {}".format(mtype))
         try:
             await getattr(self, mtype)(**message)
         except AttributeError as ex:
@@ -87,7 +98,7 @@ class PushClient(object):
                 message = await self.connection.recv()
                 await self.process(json.loads(message))
         except websockets.exceptions.ConnectionClosed:
-            log_msg(out=self.output, status="Websocket Connection closed")
+            output_msg(out=self.output, status="Websocket Connection closed")
 
     # Commands:::
 
@@ -99,12 +110,15 @@ class PushClient(object):
         :return:
 
         """
-        log_msg(out=self.output, flow="output", msg=msg)
-        await self.connection.send(json.dumps(msg))
-        if no_recv:
-            return
-        message = await self.connection.recv()
-        await self.process(json.loads(message))
+        output_msg(out=self.output, flow="output", msg=msg)
+        try:
+            await self.connection.send(json.dumps(msg))
+            if no_recv:
+                return
+            message = await self.connection.recv()
+            await self.process(json.loads(message))
+        except websockets.exceptions.ConnectionClosed as ex:
+            pass
 
     async def cmd_connect(self, server=None, **kwargs):
         """Connect to a remote websocket server
@@ -115,7 +129,7 @@ class PushClient(object):
 
         """
         srv = self.config.server or server
-        log_msg(out=self.output, status="Connecting to {}".format(srv))
+        output_msg(out=self.output, status="Connecting to {}".format(srv))
         self.connection = await websockets.connect(srv)
         self.recv.append(asyncio.ensure_future(self.receiver()))
 
@@ -126,21 +140,20 @@ class PushClient(object):
         :return:
 
         """
-        log_msg(out=self.output, status="Closing socket connection")
+        output_msg(out=self.output, status="Closing socket connection")
         if self.connection and self.connection.state == 1:
             try:
-                await self.connection.close()
                 for recv in self.recv:
                     recv.cancel()
                 self.recv = []
-            except websockets.exceptions.ConnectionClosed:
+                await self.connection.close()
+            except (websockets.exceptions.ConnectionClosed,
+                    concurrent.futures._base.CancelledError):
                 pass
 
     async def cmd_sleep(self, period=5, **kwargs):
-        log_msg(out=self.output, status="Sleeping...")
+        output_msg(out=self.output, status="Sleeping...")
         await asyncio.sleep(period)
-        cmd, args = self._next_task()
-        await getattr(self, cmd)(**args)
 
     async def cmd_hello(self, uaid=None, **kwargs):
         """Send a websocket "hello" message
@@ -150,7 +163,7 @@ class PushClient(object):
         """
         if not self.connection or self.connection.state != 1:
             await self.cmd_connect()
-        log_msg(out=self.output, status="Sending Hello")
+        output_msg(out=self.output, status="Sending Hello")
         args = dict(messageType="hello", use_webpush=1, **kwargs)
         if uaid:
             args['uaid'] = uaid
@@ -170,28 +183,27 @@ class PushClient(object):
 
         """
         timeout = timeout * 2
-        while not len(self.notifications):
-            log_msg(out=self.output,
-                    status="No notifications recv'd, Sleeping...")
+        while not self.notifications:
+            output_msg(
+                out=self.output,
+                status="No notifications recv'd, Sleeping...")
             await asyncio.sleep(0.5)
             timeout -= 1
             if timeout < 1:
                 raise PushException("Timeout waiting for messages")
-        try:
-            while True:
-                notif = self.notifications.pop(0)
-                log_msg(out=self.output,
-                        status="Sending ACK",
-                        channelID=channelID or notif['channelID'],
-                        version=version or notif['version'])
-                await self._send(messageType="ack",
-                                 channelID=channelID or notif['channelID'],
-                                 version=version or notif['version'],
-                                 no_recv=True)
-        except IndexError:
-            pass
-        cmd, args = self._next_task()
-        await getattr(self, cmd)(**args)
+
+        self.notifications.reverse()
+        for notif in self.notifications:
+            output_msg(
+                out=self.output,
+                status="Sending ACK",
+                channelID=channelID or notif['channelID'],
+                version=version or notif['version'])
+            await self._send(messageType="ack",
+                             channelID=channelID or notif['channelID'],
+                             version=version or notif['version'],
+                             no_recv=True)
+        self.notifications = []
 
     async def cmd_register(self, channelID=None, key=None, **kwargs):
         """Register a new ChannelID
@@ -202,8 +214,9 @@ class PushClient(object):
         :return:
 
         """
-        log_msg(out=self.output,
-                status="Sending new channel registration")
+        output_msg(
+            out=self.output,
+            status="Sending new channel registration")
         channelID = channelID or self.channelID or str(uuid.uuid4())
         args = dict(messageType='register',
                     channelID=channelID)
@@ -219,10 +232,17 @@ class PushClient(object):
         :return:
 
         """
-        log_msg(out=self.output,
-                status="done")
+        output_msg(
+            out=self.output,
+            status="done")
         await self.cmd_close()
         await self.connection.close_connection()
+
+    """
+    recv_* commands handle incoming responses.Since they are asynchronous
+    and need to trigger follow-up tasks, they each will need to pull and
+    process the next task.
+    """
 
     async def recv_hello(self, **msg):
         """Process a received "hello"
@@ -234,8 +254,7 @@ class PushClient(object):
         assert(msg['status'] == 200)
         try:
             self.uaid = msg['uaid']
-            cmd, args = self._next_task()
-            await getattr(self, cmd)(**args)
+            await self._next_task()
         except KeyError as ex:
             raise PushException from ex
 
@@ -249,17 +268,18 @@ class PushClient(object):
         assert(msg['status'] == 200)
         self.pushEndpoint = msg['pushEndpoint']
         self.channelID = msg['channelID']
-        log_msg(out=self.output,
-                flow="input",
-                msg=dict(
-                    message="register",
-                    channelID=self.channelID,
-                    pushEndpoint=self.pushEndpoint))
-        cmd, args = self._next_task()
-        await getattr(self, cmd)(**args)
+        output_msg(
+            out=self.output,
+            flow="input",
+            msg=dict(
+                message="register",
+                channelID=self.channelID,
+                pushEndpoint=self.pushEndpoint))
+        await self._next_task()
 
     async def recv_notification(self, **msg):
-        """Process a received notification message
+        """Process a received notification message.
+        This event does NOT trigger the next command in the stack.
 
         :param msg: body of response
 
@@ -269,14 +289,13 @@ class PushClient(object):
 
         msg['_decoded_data'] = base64.urlsafe_b64decode(
             repad(msg['data'])).decode()
-        log_msg(out=self.output,
-                flow="input",
-                message="notification",
-                msg=msg)
+        output_msg(
+            out=self.output,
+            flow="input",
+            message="notification",
+            msg=msg)
         self.notifications.append(msg)
         await self.cmd_ack()
-        cmd, args = self._next_task()
-        await getattr(self, cmd)(**args)
 
     async def _post(self, session, url, data):
         """Post a message to the endpoint
@@ -314,9 +333,12 @@ class PushClient(object):
         :return:
 
         """
-        log_msg(out=self.output,
-                status="Pushing message",
-                msg=repr(data))
+        if not self.pushEndpoint:
+            raise PushException("No Endpoint, no registration?")
+        output_msg(
+            out=self.output,
+            status="Pushing message",
+            msg=repr(data))
         if data:
             if not headers:
                 headers = {
@@ -327,9 +349,10 @@ class PushClient(object):
                 }
         result = await self._post_session(self.pushEndpoint, headers, data)
         body = await result.text()
-        log_msg(out=self.output,
-                flow="http-out",
-                pushEndpoint=self.pushEndpoint,
-                headers=headers,
-                data=repr(data),
-                result="{}: {}".format(result.status, body))
+        output_msg(
+            out=self.output,
+            flow="http-out",
+            pushEndpoint=self.pushEndpoint,
+            headers=headers,
+            data=repr(data),
+            result="{}: {}".format(result.status, body))
