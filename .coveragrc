@@ -1,0 +1,2 @@
+[run]
+omit = push_test/__main__.py
