@@ -9,6 +9,7 @@ import concurrent
 
 import aiohttp
 import websockets
+from py_vapid import Vapid
 
 
 class PushException(Exception):
@@ -35,6 +36,18 @@ class PushClient():
         self.recv = []
         self.tasks = tasks or []
         self.output = None
+        self.vapid_cache = {}
+        if args.key:
+            self.vapid = Vapid().from_file(args.key)
+        else:
+            self.vapid = Vapid()
+            self.vapid.generate_keys()
+
+    def _cache_sign(self, claims):
+        key = hash(json.dumps(claims))
+        if key not in self.vapid_cache:
+            self.vapid_cache[key] = self.vapid.sign(claims)
+        return self.vapid_cache[key]
 
     async def _next_task(self):
         """Tasks are shared between active "cmd_*" commands
@@ -325,7 +338,7 @@ class PushClient():
             reply = await self._post(session, url, data)
             return reply
 
-    async def cmd_push(self, data=None, headers=None):
+    async def cmd_push(self, data=None, headers=None, claims=None):
         """Push data to the pushEndpoint
 
         :param data: message content
@@ -335,18 +348,20 @@ class PushClient():
         """
         if not self.pushEndpoint:
             raise PushException("No Endpoint, no registration?")
+        if not headers:
+            headers = {}
+        if claims:
+            headers.update(self._cache_sign(claims))
         output_msg(
             out=self.output,
             status="Pushing message",
             msg=repr(data))
-        if data:
-            if not headers:
-                headers = {
-                    "ttl": "120",
+        if data and 'content-encoding' not in headers:
+            headers.update({
                     "content-encoding": "aesgcm128",
                     "encryption": "salt=test",
                     "encryption-key": "dh=test",
-                }
+                })
         result = await self._post_session(self.pushEndpoint, headers, data)
         body = await result.text()
         output_msg(

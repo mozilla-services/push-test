@@ -2,20 +2,30 @@
   ["hello", {}],
   ["register", {}],
   ["close", {}],
-  ["push", {"data": "mary had a little lamb", "headers":{
-    "TTL": "60",
-    "Topic": "test",
-    "content-encoding": "aesgcm128",
-    "encryption": "salt=test",
-    "encryption-key": "dh=test"
-  }}],
-  ["push", {"data": "mary had a little lamb", "headers":{
-    "TTL": "60",
-    "Topic": "test",
-    "content-encoding": "aesgcm128",
-    "encryption": "salt=test",
-    "encryption-key": "dh=test"
-  }}],
+  ["push", {
+      "data": "mary had a little dog",
+      "headers":{
+        "TTL": "60",
+        "Topic": "test",
+        "content-encoding": "aesgcm128",
+        "encryption": "salt=test",
+        "encryption-key": "dh=test"
+        },
+      "claims":{
+          "sub": "mailto:test@example.com",
+          "aud": "http://127.0.0.1:8082"
+      }
+  }],
+  ["push", {
+      "data": "mary had a little lamb",
+      "headers":{
+        "TTL": "60",
+        "Topic": "test",
+        "content-encoding": "aesgcm128",
+        "encryption": "salt=test",
+        "encryption-key": "dh=test"
+        }
+  }],
   ["hello", {}],
   ["sleep", {"period":0.5}]
 ]

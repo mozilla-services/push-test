@@ -29,6 +29,9 @@ def config():
                         type=int,
                         help="Enable async debug mode",
                         default=None)
+    parser.add_argument("--key",
+                        type=str,
+                        help="VAPID private key file")
     return parser.parse_args()
 
 

@@ -14,6 +14,7 @@ from push_test.pushclient import PushClient, PushException
 class TrialSettings(object):
     def __init__(self):
         self.server = "localhost"
+        self.key = None
 
 
 class Test_PushClient(unittest.TestCase):
