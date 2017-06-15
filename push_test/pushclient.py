@@ -1,15 +1,22 @@
 import asyncio
 import base64
+import hashlib
 import json
+import ssl
 import uuid
 import sys
 import traceback
 import logging
-import concurrent
+import os
+from urllib.parse import urlparse
+from concurrent import futures
 
 import aiohttp
+# aiohttp 2.0.7 supports websockets, but API may not yet be stable.
+# until then, using the websockets library
 import websockets
 from py_vapid import Vapid
+from typing import List, Dict, AnyStr, Union, Any
 
 
 class PushException(Exception):
@@ -20,12 +27,14 @@ logger = logging.getLogger(__name__)
 
 
 def output_msg(out=sys.stdout, **msg):
+    """Send a message to the output stream (normally STDOUT"""
     print(json.dumps(msg), file=out)
 
 
-class PushClient():
+class PushClient(object):
     """Smoke Test the Autopush push server"""
-    def __init__(self, args, loop, tasks=None):
+    def __init__(self, args, loop,
+                 tasks: List[List[Union[AnyStr, Dict]]]=None):
         self.config = args
         self.loop = loop
         self.connection = None
@@ -37,14 +46,44 @@ class PushClient():
         self.tasks = tasks or []
         self.output = None
         self.vapid_cache = {}
-        if args.key:
-            self.vapid = Vapid().from_file(args.key)
+        if args.vapid_key:
+            self.vapid = Vapid().from_file(args.vapid_key)
         else:
             self.vapid = Vapid()
             self.vapid.generate_keys()
+        self.tls_conn = None
+        if args.partner_endpoint_cert:
+            if os.path.isfile(args.partner_endpoint_cert):
+                context = ssl.create_default_context(
+                    cafile=args.partner_endpoint_cert)
+            else:
+                context = ssl.create_default_context(
+                    cadata=args.partner_endpoint_cert)
+            context.verify_mode = ssl.CERT_REQUIRED
+            context.check_hostname = False
+            self.tls_conn = aiohttp.TCPConnector(ssl_context=context)
 
-    def _cache_sign(self, claims):
-        key = hash(json.dumps(claims))
+    def _fix_endpoint(self, endpoint: str) -> str:
+        """Adjust the endpoint if needed"""
+        if self.config.partner_endpoint:
+            orig_path = urlparse(endpoint).path
+            partner = urlparse(self.config.partner_endpoint)
+            return "{scheme}://{host}{path}".format(
+                scheme=partner.scheme,
+                host=partner.netloc,
+                path=orig_path)
+        return endpoint
+
+    def _cache_sign(self, claims: Dict[str, str]) -> Dict[str, str]:
+        """Pull a VAPID header from the cache or sign the new header
+
+        :param claims: list of VAPID claims.
+        :returns: dictionary of VAPID headers.
+
+        """
+        vhash = hashlib.sha1()
+        vhash.update(json.dumps(claims).encode())
+        key = vhash.digest()
         if key not in self.vapid_cache:
             self.vapid_cache[key] = self.vapid.sign(claims)
         return self.vapid_cache[key]
@@ -57,7 +96,6 @@ class PushClient():
         """
         try:
             task = self.tasks.pop(0)
-            args = task[1]
             logging.debug(">>> cmd_{}".format(task[0]))
             await getattr(self, "cmd_" + task[0])(**(task[1]))
             return True
@@ -68,16 +106,17 @@ class PushClient():
             raise
         except AttributeError:
             raise PushException("Invalid command: {}".format(task[0]))
-        except Exception:
+        except Exception:  # pragma nocover
             traceback.print_exc()
             raise
 
     async def run(self,
-                  server="wss://push.services.mozilla.com",
-                  tasks=None):
+                  server: str="wss://push.services.mozilla.com",
+                  tasks: List[List[Union[AnyStr, Dict]]]=None):
         """Connect to a remote server and execute the tasks
 
         :param server: URL to the Push Server
+        :param tasks: List of tasks and arguments to run
 
         """
         if tasks:
@@ -87,15 +126,13 @@ class PushClient():
         while await self._next_task():
             pass
 
-    async def process(self, message):
+    async def process(self, message: Dict[str, Any]):
         """Process an incoming websocket message
 
         :param message: JSON message content
-        :return:
 
         """
         mtype = "recv_" + message.get('messageType').lower()
-        logger.debug("<<< {}".format(mtype))
         try:
             await getattr(self, mtype)(**message)
         except AttributeError as ex:
@@ -109,13 +146,14 @@ class PushClient():
         try:
             while self.connection:
                 message = await self.connection.recv()
+                print("<<< {}".format(message))
                 await self.process(json.loads(message))
         except websockets.exceptions.ConnectionClosed:
             output_msg(out=self.output, status="Websocket Connection closed")
 
     # Commands:::
 
-    async def _send(self, no_recv=False, **msg):
+    async def _send(self, no_recv: bool=False, **msg):
         """Send a message out the websocket connection
 
         :param no_recv: Flag to indicate if response is expected
@@ -130,15 +168,14 @@ class PushClient():
                 return
             message = await self.connection.recv()
             await self.process(json.loads(message))
-        except websockets.exceptions.ConnectionClosed as ex:
+        except websockets.exceptions.ConnectionClosed:
             pass
 
-    async def cmd_connect(self, server=None, **kwargs):
+    async def cmd_connect(self, server: str=None, **kwargs):
         """Connect to a remote websocket server
 
         :param server: Websocket url
         :param kwargs: ignored
-        :return:
 
         """
         srv = self.config.server or server
@@ -150,7 +187,6 @@ class PushClient():
         """Close the websocket connection (if needed)
 
         :param kwargs: ignored
-        :return:
 
         """
         output_msg(out=self.output, status="Closing socket connection")
@@ -161,14 +197,14 @@ class PushClient():
                 self.recv = []
                 await self.connection.close()
             except (websockets.exceptions.ConnectionClosed,
-                    concurrent.futures._base.CancelledError):
+                    futures.CancelledError):
                 pass
 
-    async def cmd_sleep(self, period=5, **kwargs):
+    async def cmd_sleep(self, period: int=5, **kwargs):
         output_msg(out=self.output, status="Sleeping...")
         await asyncio.sleep(period)
 
-    async def cmd_hello(self, uaid=None, **kwargs):
+    async def cmd_hello(self, uaid: str=None, **kwargs):
         """Send a websocket "hello" message
 
         :param uaid: User Agent ID (if reconnecting)
@@ -184,15 +220,17 @@ class PushClient():
             args['uaid'] = self.uaid
         await self._send(**args)
 
-    async def cmd_ack(self, channelID=None, version=None,
-                      timeout=60, **kwargs):
+    async def cmd_ack(self,
+                      channelID: str=None,
+                      version: str=None,
+                      timeout: int=60,
+                      **kwargs):
         """Acknowledge a previous mesage
 
         :param channelID: Channel to acknowledge
         :param version: Version string for message to acknowledge
         :param kwargs: Additional optional arguments
         :param timeout: Time to wait for notifications (used by testing)
-        :return:
 
         """
         timeout = timeout * 2
@@ -218,7 +256,8 @@ class PushClient():
                              no_recv=True)
         self.notifications = []
 
-    async def cmd_register(self, channelID=None, key=None, **kwargs):
+    async def cmd_register(self, channelID: str=None,
+                           key: str=None, **kwargs):
         """Register a new ChannelID
 
         :param channelID: UUID for the channel to register
@@ -257,7 +296,7 @@ class PushClient():
     process the next task.
     """
 
-    async def recv_hello(self, **msg):
+    async def recv_hello(self, **msg: Dict[str, Any]):
         """Process a received "hello"
 
         :param msg: body of response
@@ -279,7 +318,7 @@ class PushClient():
 
         """
         assert(msg['status'] == 200)
-        self.pushEndpoint = msg['pushEndpoint']
+        self.pushEndpoint = self._fix_endpoint(msg['pushEndpoint'])
         self.channelID = msg['channelID']
         output_msg(
             out=self.output,
@@ -297,8 +336,8 @@ class PushClient():
         :param msg: body of response
 
         """
-        def repad(str):
-            return str + '===='[len(msg['data']) % 4:]
+        def repad(string):
+            return string + '===='[len(msg['data']) % 4:]
 
         msg['_decoded_data'] = base64.urlsafe_b64decode(
             repad(msg['data'])).decode()
@@ -310,7 +349,7 @@ class PushClient():
         self.notifications.append(msg)
         await self.cmd_ack()
 
-    async def _post(self, session, url, data):
+    async def _post(self, session, url: str, data: bytes):
         """Post a message to the endpoint
 
         :param session: async session object
@@ -321,9 +360,12 @@ class PushClient():
         """
         # print ("Fetching {}".format(url))
         with aiohttp.Timeout(10, loop=session.loop):
-            return await session.post(url=url, data=data)
+            return await session.post(url=url,
+                                      data=data)
 
-    async def _post_session(self, url, headers, data):
+    async def _post_session(self, url: str,
+                            headers: Dict[str, str],
+                            data: bytes):
         """create a session to send the post message to the endpoint
 
         :param url: pushEndpoint
@@ -331,18 +373,24 @@ class PushClient():
         :param data: body of the content to send
 
         """
+
         async with aiohttp.ClientSession(
                 loop=self.loop,
-                headers=headers
+                headers=headers,
+                read_timeout=30,
+                connector=self.tls_conn,
         ) as session:
             reply = await self._post(session, url, data)
             return reply
 
-    async def cmd_push(self, data=None, headers=None, claims=None):
+    async def cmd_push(self, data: bytes=None,
+                       headers: Dict[str, str]=None,
+                       claims: Dict[str, str]=None):
         """Push data to the pushEndpoint
 
         :param data: message content
         :param headers: dictionary of headers
+        :param claims: VAPID claims
         :return:
 
         """

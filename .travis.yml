@@ -1,0 +1,10 @@
+language: python
+python:
+  - "3.6"
+install:
+  - pip install -r test-requirements.txt
+script:
+  - pytest push_test
+  - flake8 push_test
+after_success:
+  - codecov

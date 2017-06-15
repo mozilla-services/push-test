@@ -3,7 +3,7 @@ import json
 import logging
 
 import websockets
-import argparse
+import configargparse
 
 from push_test.pushclient import PushClient
 
@@ -12,26 +12,52 @@ logger = logging.getLogger(__name__)
 
 
 def config():
-    parser = argparse.ArgumentParser(
+    parser = configargparse.ArgumentParser(
         usage="Smoke Test program for autopush",
+        default_config_files=["push-test.ini"],
         add_help=True,
     )
-    parser.add_argument("--task_file",
+    parser.add_argument("-c",
+                        "--config",
+                        is_config_file=True,
+                        help="Config file path")
+    parser.add_argument("-t",
+                        "--task_file",
                         type=str,
                         help="path to file of JSON commands",
-                        default="tasks.json"
+                        default="tasks.json",
+                        env_var="TASK_FILE",
                         )
-    parser.add_argument("--server",
+    parser.add_argument("-s",
+                        "--server",
                         type=str,
                         help="URL to websocket server",
-                        default="wss://push.services.mozilla.com")
+                        default="wss://push.services.mozilla.com",
+                        env_var="SERVER",
+                        )
     parser.add_argument("--debug",
-                        type=int,
                         help="Enable async debug mode",
+                        action="store_true",
+                        env_var="DEBUG",
                         default=None)
     parser.add_argument("--key",
                         type=str,
-                        help="VAPID private key file")
+                        dest="vapid_key",
+                        help="VAPID private key file",
+                        env_var="VAPID_KEY")
+    parser.add_argument("-e",
+                        "--endpoint",
+                        type=str,
+                        dest="partner_endpoint",
+                        help="Partner endpoint override",
+                        env_var="ENDPOINT",
+                        default=None)
+    parser.add_argument("--endpoint_ssl_cert",
+                        type=str,
+                        dest="partner_endpoint_cert",
+                        help="Partner endpoint certificate",
+                        env_var="ENDPOINT_SSL_CERT",
+                        default=None)
     return parser.parse_args()
 
 
