@@ -2,18 +2,30 @@ import asyncio
 import base64
 import io
 import json
+import os
 import unittest
+import tempfile
+import uuid
 
 import pytest
 import websockets
+from py_vapid import Vapid
 from mock import Mock, patch
 
 from push_test.pushclient import PushClient, PushException
 
 
 class TrialSettings(object):
+    """Empty setting arguments class, for use by testing and integration"""
     def __init__(self):
         self.server = "localhost"
+        self.key = None
+        self.debug = False
+        self.endpoint = None
+        self.endpoint_ssl_cert = None
+        self.vapid_key = None
+        self.partner_endpoint = None
+        self.partner_endpoint_cert = None
 
 
 class Test_PushClient(unittest.TestCase):
@@ -28,7 +40,7 @@ class Test_PushClient(unittest.TestCase):
 
     def setUp(self):
         self.mocks = dict(send=Mock(),
-                          recv=Mock(),
+                          recv=Mock(return_value="Dummy String"),
                           close=Mock(),
                           close_connection=Mock())
         self.output = io.StringIO()
@@ -44,6 +56,39 @@ class Test_PushClient(unittest.TestCase):
         self.output.seek(0)
         lines = self.output.readlines()
         return any(phrase in line for line in lines)
+
+    def test_init(self):
+        args = TrialSettings()
+        args.vapid_key = os.path.join(tempfile.gettempdir(), uuid.uuid4().hex)
+        vapid = Vapid()
+        vapid.generate_keys()
+        vapid.save_key(args.vapid_key)
+        client = PushClient(loop=self.loop, args=args)
+        assert (client.vapid.public_key.public_numbers().encode_point ==
+                vapid.public_key.public_numbers().encode_point)
+        os.unlink(args.vapid_key)
+
+    @patch('ssl.create_default_context')
+    @patch('aiohttp.TCPConnector')
+    def test_init_cert(self, m_connector, m_ssl):
+        # as data:
+        args = TrialSettings()
+        args.partner_endpoint_cert = os.path.join(
+            tempfile.gettempdir(), uuid.uuid4().hex)
+        PushClient(loop=self.loop, args=args)
+        assert m_ssl.call_args[1]['cadata'] == args.partner_endpoint_cert
+        assert m_connector.call_args[1]['ssl_context'].check_hostname is False
+        with open(args.partner_endpoint_cert, "wb"):
+            pass
+        m_connector.reset_mock()
+        m_ssl.reset_mock()
+        # as file:
+        with open(args.partner_endpoint_cert) as file:
+            file.close()
+        PushClient(loop=self.loop, args=args)
+        assert m_ssl.call_args[1]['cafile'] == args.partner_endpoint_cert
+        assert m_connector.call_args[1]['ssl_context'].check_hostname is False
+        os.unlink(args.partner_endpoint_cert)
 
     @patch('websockets.connect')
     def test_run(self, m_connect):
@@ -87,8 +132,6 @@ class Test_PushClient(unittest.TestCase):
         assert len(self.client.tasks) == 0
         call_args = json.loads(self.mocks['send'].call_args[0][0])
         assert call_args == dict(messageType="hello", use_webpush=1)
-        assert self.mocks['close'].called is False
-        assert self.mocks['close_connection'].called is False
 
     @patch('websockets.connect')
     def test_run_bad_recv(self, m_connect):
@@ -97,10 +140,10 @@ class Test_PushClient(unittest.TestCase):
                 await self.client.run(tasks=self.tasks)
 
         self.mocks['recv'] = Mock(return_value=json.dumps(
-                {"messageType": "invalid",
-                 "status": 200,
-                 "uaid": "uaidValue",
-                 "channelID": "chidValue"}
+            {"messageType": "invalid",
+             "status": 200,
+             "uaid": "uaidValue",
+             "channelID": "chidValue"}
             )
         )
         m_connect.return_value = asyncio.ensure_future(
@@ -135,10 +178,10 @@ class Test_PushClient(unittest.TestCase):
             await self.client.cmd_hello()
 
         self.mocks['recv'] = Mock(return_value=json.dumps(
-                {"messageType": "hello",
-                 "status": 200,
-                 "uaid": "uaidValue",
-                 "channelID": "chidValue"}
+            {"messageType": "hello",
+             "status": 200,
+             "uaid": "uaidValue",
+             "channelID": "chidValue"}
             )
         )
         m_connect.return_value = asyncio.ensure_future(
@@ -158,10 +201,10 @@ class Test_PushClient(unittest.TestCase):
             await self.client.cmd_hello(uaid="uaidValue")
 
         self.mocks['recv'] = Mock(return_value=json.dumps(
-                {"messageType": "hello",
-                 "status": 200,
-                 "uaid": "uaidValue",
-                 "channelID": "chidValue"}
+            {"messageType": "hello",
+             "status": 200,
+             "uaid": "uaidValue",
+             "channelID": "chidValue"}
             )
         )
         m_connect.return_value = asyncio.ensure_future(
@@ -179,10 +222,10 @@ class Test_PushClient(unittest.TestCase):
             await self.client.cmd_hello()
 
         self.mocks['recv'] = Mock(return_value=json.dumps(
-                {"messageType": "hello",
-                 "status": 200,
-                 "uaid": "uaidValue",
-                 "channelID": "chidValue"}
+            {"messageType": "hello",
+             "status": 200,
+             "uaid": "uaidValue",
+             "channelID": "chidValue"}
             )
         )
         m_connect.return_value = asyncio.ensure_future(
@@ -206,9 +249,9 @@ class Test_PushClient(unittest.TestCase):
                 pass
 
         self.mocks['recv'] = Mock(return_value=json.dumps(
-                {"messageType": "hello",
-                 "status": 200,
-                 "channelID": "chidValue"}
+            {"messageType": "hello",
+             "status": 200,
+             "channelID": "chidValue"}
             )
         )
         m_connect.return_value = asyncio.ensure_future(
@@ -225,13 +268,17 @@ class Test_PushClient(unittest.TestCase):
             self.client.notifications = [
                 dict(channelID='channel1', version='version1')
             ]
+            print('sending ack')
             await self.client.cmd_ack()
+            await self.client.cmd_close()
+            print('x ack')
+            self.loop.stop()
 
         self.mocks['recv'] = Mock(return_value=json.dumps(
-                {"messageType": "hello",
-                 "status": 200,
-                 "uaid": "uaidValue",
-                 "channelID": "chidValue"}
+            {"messageType": "hello",
+             "status": 200,
+             "uaid": "uaidValue",
+             "channelID": "chidValue"}
             )
         )
         m_connect.return_value = asyncio.ensure_future(
@@ -243,7 +290,7 @@ class Test_PushClient(unittest.TestCase):
 
     @patch('websockets.connect')
     @patch('asyncio.sleep')
-    def test_cmd_ack_timeout(self, m_connect, m_sleep):
+    def test_cmd_ack_timeout(self, m_sleep, m_connect):
 
         async def mock_sleep():
             return asyncio.coroutine(Mock())
@@ -259,14 +306,13 @@ class Test_PushClient(unittest.TestCase):
                     await self.client.cmd_ack(timeout=1, sleep=0)
             except PushException as ex:
                 assert ex.args[0] == 'Timeout waiting for messages'
+                self.loop.stop()
 
         self.mocks['recv'] = Mock(return_value=json.dumps(
                 {"messageType": "hello",
                  "status": 200,
-                 "uaid": "uaidValue",
-                 "channelID": "chidValue"}
-            )
-        )
+                 "uaid": "uaidValue"}
+            ))
         m_sleep.return_value = asyncio.ensure_future(
             mock_sleep(),
             loop=self.loop
@@ -292,11 +338,11 @@ class Test_PushClient(unittest.TestCase):
             await self.client.cmd_register(key="someKey")
 
         self.mocks['recv'] = Mock(return_value=json.dumps(
-                {"messageType": "register",
-                 "status": 200,
-                 "uaid": "uaidValue",
-                 "channelID": chid,
-                 "pushEndpoint": endpoint}
+            {"messageType": "register",
+             "status": 200,
+             "uaid": "uaidValue",
+             "channelID": chid,
+             "pushEndpoint": endpoint}
             )
         )
         m_connect.return_value = asyncio.ensure_future(
@@ -306,6 +352,38 @@ class Test_PushClient(unittest.TestCase):
         assert self.client.pushEndpoint == endpoint
         assert self.client.channelID == chid
         assert self.scan_log("Sending new channel registration")
+
+    @patch('websockets.connect')
+    def test_cmd_register_c_endpoint(self, m_connect):
+        endpoint = "http://localhost/v1/push/longStringOfCrap"
+        chid = "chidValue"
+        args = TrialSettings()
+        args.partner_endpoint = "http://example.com"
+        self.client = PushClient(loop=self.loop, args=args)
+        self.client.output = self.output
+
+        async def go():
+            # Can't call .assert_raises() using an await
+            await self.client.cmd_connect()
+            self.mock_connect.state = 1
+            self.client.uaid = "uaidValue"
+            await self.client.cmd_register(key="someKey")
+
+        self.mocks['recv'] = Mock(return_value=json.dumps(
+            {"messageType": "register",
+             "status": 200,
+             "uaid": "uaidValue",
+             "channelID": chid,
+             "pushEndpoint": endpoint}
+            )
+        )
+
+        m_connect.return_value = asyncio.ensure_future(
+            self.mock_connect(),
+            loop=self.loop)
+        self.loop.run_until_complete(go())
+        assert (self.client.pushEndpoint ==
+                "http://example.com/v1/push/longStringOfCrap")
 
     @patch('websockets.connect')
     def test_rcv_notification(self, m_connect):
@@ -337,6 +415,47 @@ class Test_PushClient(unittest.TestCase):
             self.mock_connect(),
             loop=self.loop)
         self.loop.run_until_complete(go())
+
+    def test_cache_sign(self):
+        claims = {
+            "sub": "mailto:a@b.c",
+            "aud": "http://a.b",
+            "foo": "bar.bell"
+        }
+        test1 = self.client._cache_sign(claims)
+        # signing will alter the claims and add an expiration.
+        del(claims['exp'])
+        self.client._cache_sign({
+            "sub": "mailto:h@i.jo",
+            "aud": "http://a.b"
+        })
+        test3 = self.client._cache_sign(claims)
+        assert test1 == test3
+
+    def test_next_task(self):
+        async def go():
+            try:
+                await self.client._next_task()
+                assert False, "Invalid command accepted"  # pragma nocover
+            except PushException:
+                pass
+
+        self.client.tasks = [("invalid", {})]
+        self.loop.run_until_complete(go())
+
+    def test_closed_recv(self):
+        async def go():
+            await self.client.receiver()
+
+        async def abort():
+            raise websockets.exceptions.ConnectionClosed(code=0, reason="test")
+
+        self.client.connection = Mock()
+        self.client.connection.recv = abort
+
+        self.client.tasks = [("invalid", {})]
+        self.loop.run_until_complete(go())
+        assert self.scan_log("Websocket Connection closed")
 
     """
     # Fails: async with aiohttp.ClientSession() missing __aexit__

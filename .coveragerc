@@ -1,2 +1,3 @@
-[run]
+[report]
 omit = push_test/__main__.py
+show_missing = True
